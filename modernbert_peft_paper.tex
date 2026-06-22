@@ -1,0 +1,449 @@
+% ACL 2023 style — use with acl.sty from https://github.com/acl-org/acl-style-files
+% Compile with: pdflatex -> bibtex -> pdflatex -> pdflatex
+% Or paste into Overleaf and select ACL 2023 template
+
+\documentclass[11pt]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[hyperref]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{microtype}
+
+\title{Parameter-Efficient Fine-Tuning of ModernBERT:\\
+A Comparative Study of LoRA and IA\textsuperscript{3}}
+
+\author{
+  Jonna Bauer \quad Francesca Romana Blanda \quad Ting Hsu \\
+  Theory and Applications of Deep Learning (IIE7721) \\
+  Yonsei Uiversity \\
+}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────
+\begin{abstract}
+Fine-tuning large pre-trained language models for downstream tasks is
+computationally expensive, requiring updates to hundreds of millions of
+parameters. Parameter-efficient fine-tuning (PEFT) methods address this
+by training only a small number of additional parameters while keeping
+the base model frozen. In this work, we apply two prominent PEFT
+methods --- Low-Rank Adaptation (LoRA) and Infused Adapter by Inhibiting
+and Amplifying Inner Activations (IA\textsuperscript{3}) --- to
+ModernBERT \cite{warner2024modernbert}, a recently released encoder-only
+transformer that modernises the original BERT architecture. We evaluate
+both methods on two text classification benchmarks: SST-2 (sentiment
+analysis) and QNLI (question-answer natural language inference). Our
+experiments show that LoRA achieves within 2.3\% of full fine-tuning
+accuracy while using 99.6\% fewer trainable parameters, but degrades
+significantly in low-data settings. We further analyse the effect of
+LoRA rank and training set size on model performance, providing
+practical guidance for applying PEFT methods to ModernBERT.
+\end{abstract}
+
+% ─────────────────────────────────────────
+\section{Introduction}
+
+Pre-trained language models such as BERT \cite{devlin2019bert} have
+become the backbone of modern natural language processing (NLP). These
+models are typically pre-trained on large corpora and then fine-tuned on
+task-specific datasets. However, full fine-tuning updates all model
+parameters --- hundreds of millions in the case of BERT-base --- making
+it memory-intensive and expensive, especially when fine-tuning for
+multiple downstream tasks simultaneously.
+
+Parameter-efficient fine-tuning (PEFT) methods have emerged as a
+practical alternative. Instead of updating all parameters, PEFT methods
+introduce a small number of trainable components while keeping the
+pre-trained weights frozen. Among these, LoRA \cite{hu2021lora} has
+become particularly popular due to its simplicity and strong empirical
+performance across a wide range of tasks.
+
+In this paper, we study PEFT methods in the context of ModernBERT
+\cite{warner2024modernbert}, a recently released encoder-only transformer
+that incorporates architectural improvements developed since the original
+BERT release in 2018. ModernBERT supports longer input sequences (up to
+8,192 tokens), uses rotary positional embeddings, and achieves state-of-the-art
+performance on both text and code understanding benchmarks. Despite its
+recent release, there is currently no published study on the behaviour
+of PEFT methods applied to ModernBERT, motivating our investigation.
+
+We address the following research questions:
+\begin{enumerate}
+    \item Can LoRA match full fine-tuning on ModernBERT with significantly
+          fewer trainable parameters?
+    \item How does LoRA rank affect accuracy and efficiency?
+    \item Does LoRA performance degrade in low-data settings?
+    \item How does IA\textsuperscript{3} compare to LoRA on ModernBERT
+          across different tasks?
+\end{enumerate}
+
+% ─────────────────────────────────────────
+\section{Background and Related Work}
+
+\subsection{BERT and ModernBERT}
+
+BERT \cite{devlin2019bert} introduced bidirectional pre-training of
+transformers, achieving state-of-the-art results across a wide range of
+NLP benchmarks. Subsequent work such as RoBERTa \cite{liu2019roberta}
+improved BERT by optimizing pre-training hyperparameters and using more
+data, while DeBERTa \cite{he2021deberta} introduced disentangled
+attention mechanisms.
+
+ModernBERT \cite{warner2024modernbert} represents a
+significant modernization of the BERT architectures with an extended context window and a design optimized for downstream performance and efficiency on modern hardware. It was also trained on a substantially larger and more diverse corpus than the original BERT models. To support longer input sequences, ModernBERT interleaves local sliding-window attention with periodic global attention, extending the context window to 8,192 tokens. Compared to earlier BERT variants, ModernBERT additionally incorporates Rotary Position Embeddings (RoPE), GeGLU activations, bias-free linear layers, and native support for FlashAttention. 
+
+ModernBERT achieves state-of-the-art or competitive performance on a wide range of downstream NLP benchmarks compared to its predecessors. However, because these architectural changes differentiate ModernBERT from earlier BERT variants, it remains unclear whether conclusions drawn from previous evaluations of Parameter-Efficient Fine-Tuning (PEFT) methods generalize to this architecture.
+
+\subsection{Parameter-Efficient Fine-Tuning}
+
+PEFT methods reduce the computational and memory cost of adapting large pre-trained models by keeping most of the model parameters frozen while updating only a small subset of trainable parameters \cite{hanParameterEfficientFineTuningLarge2024}. Depending on the method, these trainable parameters may be introduced as additional modules, low-rank weight updates, learned prompts, or scaling vectors integrated throughout the network. Despite optimizing only a small fraction of the model parameters, PEFT methods have been shown to achieve performance comparable to full fine-tuning on many downstream tasks.
+
+
+LoRA \cite{hu2021lora} is a reparameterization-based PEFT method that introduces small trainable matrices into selected layers while keeping the original model weights frozen. It is based on the observation that weight updates during adaptation have a low intrinsic dimension, meaning that the changes required for fine-tuning can often be well approximated by a low-rank decomposition. Specifically, LoRA freezes the original parameters and inserts two low-rank matrices, $A$ and $B$, referred to as adapters, into existing weight matrices. The resulting learnable update is given by
+$
+\Delta W = \frac{\alpha}{r}BA,
+$
+where $B \in \mathbb{R}^{d \times r}$, $A \in \mathbb{R}^{r \times k}$, and $r \ll \min(d, k)$ is the bottleneck rank that controls the expressive capacity of the adaptation. The scaling factor $\frac{\alpha}{r}$ determines the effective magnitude of the update and helps maintain a consistent update scale across different choices of rank. By learning only these low-rank matrices instead of updating all model parameters, LoRA substantially reduces memory usage and computational cost, making fine-tuning significantly more efficient than full fine-tuning.
+
+IA\textsuperscript{3} \cite{liu2022ia3} takes a different approach being a multiplicative PEFT method that adapts a pre-trained model by learning a small set of trainable scaling vectors while keeping all original model parameters frozen. Instead of introducing additional weight matrices, IA\textsuperscript{3} modulates internal activations via element-wise multiplicative rescaling. Concretely, learned vectors are injected into selected components of the network, including the key and value projections in the attention mechanism and the hidden activations in the feed-forward layers.
+
+For a given hidden representation $h$, IA\textsuperscript{3} applies a learned scaling vector $l$ as
+\[
+h' = l \odot h,
+\]
+where $\odot$ denotes element-wise multiplication. In the attention module, this corresponds to
+\[
+k' = l_k \odot k, \quad v' = l_v \odot v,
+\]
+while in the feed-forward network, a separate vector $l_{\text{ffn}}$ rescales intermediate activations. These vectors are low-dimensional (one value per channel), making the number of trainable parameters extremely small compared to full fine-tuning or reparameterization-based methods such as LoRA. By selectively amplifying or suppressing feature dimensions through learned gating, IA\textsuperscript{3} achieves efficient task adaptation with minimal computational and memory overhead.
+
+% ─────────────────────────────────────────
+\section{Methodology}
+
+\subsection{Base Model}
+
+We use \texttt{answerdotai/ModernBERT-base} as the base model for all experiments. ModernBERT-base contains 149.6M
+parameters. We freeze or update these base weights depending on the specific fine-tuning strategy, ensuring the starting representations remain identical across all trials.
+
+\subsection{Datasets}
+
+We evaluate on two GLUE \cite{wang2019glue} benchmarks:
+
+\paragraph{SST-2} The Stanford Sentiment Treebank \cite{socher2013sst2}
+is a binary sentiment classification task consisting of movie review
+sentences labeled as positive or negative. We train on the standard split
+(67,349 examples) and report accuracy on the validation set (872 examples).
+
+\paragraph{QNLI} The Question Natural Language Inference dataset is derived from SQuAD. The model determines whether a given sentence entails the answer to an associated question. We use 104,743 training examples and report accuracy on the validation set of 5,463 examples.
+
+\subsection{Fine-Tuning Methods}
+
+We compare three fine-tuning strategies:
+
+\paragraph{Full fine-tuning} All 149.6M model parameters are updated
+during training. We use this as our upper-bound baseline.
+
+\paragraph{LoRA} We apply Low-Rank Adaptation (LoRA) matrices into the query-key-value projections (\texttt{Wqkv}) of each transformer block, as well as the final sequence pooler projection layer. We evaluate ranks $r \in \{4, 8, 16\}$, setting $\alpha = 2r$ and applying a dropout rate of 0.1. For evaluating LoRA in low-data settings, the model is trained with 500, 1000, and 5000 training examples.
+
+\paragraph{IA\textsuperscript{3}} We apply IA\textsuperscript{3} learned rescaling vectors to the query-key-value projections (\texttt{Wqkv}) of each transformer block. Furthermore, we apply feedforward rescaling vectors to the final sequence pooler projection layer (\texttt{dense}).
+
+\subsection{Training Setup}
+
+Models are trained using the HuggingFace \texttt{Trainer} API with the default AdamW optimiser. We maintain a constant learning rate of $2 \times 10^{-5}$ across all experiments, including both full fine-tuning and parameter-efficient methods. We use a training batch size of 16 and an evaluation batch size of 32. 
+
+Model evaluation occurs at the end of each training epoch. We explicitly disable checkpoint saving; consequently, all reported validation accuracies reflect the model's state at the final training step rather than the peak validation performance. We record the total wall-clock training time to compare the computational overhead of each method. All experiments are executed on a single NVIDIA T4 GPU via Google Colab, with telemetry disabled and a fixed random seed of 42 to ensure reproducibility.
+
+% ─────────────────────────────────────────
+\section{Results}
+
+\subsection{Full Fine-Tuning Baseline}
+
+Table~\ref{tab:baseline} shows results for full fine-tuning across
+different numbers of training epochs on SST-2.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{Epochs} & \textbf{Accuracy} & \textbf{Params} & \textbf{Time (min)} \\
+\midrule
+1 & 95.30 & 149.6M & 32.8 \\
+2 & 94.95 & 149.6M & 72.7 \\
+3 & 94.72 & 149.6M & 101.6 \\
+\bottomrule
+\end{tabular}
+\caption{Full fine-tuning results on SST-2 validation set.}
+\label{tab:baseline}
+\end{table}
+
+Notably, a single epoch achieves the highest accuracy (95.30\%), with
+additional epochs slightly degrading performance, suggesting rapid
+convergence and mild overfitting on subsequent epochs.
+
+\subsection{LoRA Rank Ablation}
+
+Table~\ref{tab:lora_rank} reports the effect of LoRA rank on SST-2.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{Rank} & \textbf{Accuracy} & \textbf{Params} & \textbf{Time (min)} \\
+\midrule
+$r=4$  & 92.20 & 278K  & 83.9 \\
+$r=8$  & 92.43 & 554K  & 79.3 \\
+$r=16$ & 93.00 & 1.1M  & 79.9 \\
+\bottomrule
+\end{tabular}
+\caption{LoRA rank ablation on SST-2 (full training set).}
+\label{tab:lora_rank}
+\end{table}
+
+LoRA with $r=16$ achieves 93.00\% accuracy, within 2.3 percentage points
+of the full fine-tuning baseline, while using only 0.74\% of the
+trainable parameters. The accuracy difference between $r=4$ and $r=16$
+is small (0.80\%), suggesting rank is not the primary bottleneck for
+this task.
+
+\subsection{Low-Data Regime}
+
+Table~\ref{tab:lowdata} shows the effect of training set size on LoRA
+performance ($r=8$) on SST-2.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Train Samples} & \textbf{Accuracy} & \textbf{Time (min)} \\
+\midrule
+500   & 47.71 & 1.1  \\
+1,000 & 54.01 & 1.8  \\
+5,000 & 60.09 & 6.4  \\
+Full (67,349) & 93.00 & 78.7 \\
+\bottomrule
+\end{tabular}
+\caption{LoRA ($r=8$) performance under varying training set sizes on SST-2.}
+\label{tab:lowdata}
+\end{table}
+
+Performance degrades substantially with limited data, dropping to 60.09\%
+with 5,000 samples --- barely above the majority class baseline for a
+binary classification task. This suggests LoRA adapters on ModernBERT
+require a sufficient volume of task-specific data to update meaningfully.
+
+\subsection{IA\textsuperscript{3} vs LoRA Comparison}
+
+% ── Fill in your results here once experiments are complete ──
+% Example table structure below — replace ? with your values
+
+\begin{table}[h]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llccc}
+\toprule
+\textbf{Method} & \textbf{Dataset} & \textbf{Acc.} & \textbf{Params} & \textbf{Time} \\
+\midrule
+Full FT          & SST-2 & 95.30 & 149.6M & 32.8 \\
+LoRA $r=8$       & SST-2 & 93.00 & 554K   & 79.3 \\
+IA$^3$           & SST-2 & 82.34 & 53.0K  & 74.5 \\
+\midrule
+Full FT          & QNLI  & 50.54 & 149.6M & 55.7 \\
+LoRA $r=8$       & QNLI  & 49.70 & 555K   & 133.3 \\
+IA$^3$           & QNLI  & 81.19 & 53.8K  & 75.8 \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of fine-tuning methods across SST-2 and QNLI. Full FT = full fine-tuning.}
+\label{tab:comparison}
+\end{table}
+
+The results on QNLI diverge sharply from those on SST-2. Both full
+fine-tuning (50.54\%) and LoRA (49.70\%) fail to exceed chance-level
+accuracy on this binary task, while IA$^3$ reaches 81.19\%, only 1.15
+points below its own SST-2 result. We discuss this surprising reversal,
+together with our suspected causes, in Section~\ref{sec:discussion}.
+
+% ─────────────────────────────────────────
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{LoRA is Effective but Dependent on Data}
+
+On SST-2, LoRA behaves the way the PEFT literature would predict: it
+adapts ModernBERT effectively for text classification, reaching within
+2.3 points of full fine-tuning accuracy with a small fraction of
+trainable parameters. This holds, however, only when sufficient training
+data is available. The sharp accuracy drop in our low-data experiments
+(47.71\% with 500 samples, barely above the majority class baseline)
+suggests that LoRA's low-rank adapters need enough gradient signal across
+many examples before they capture meaningful task specific structure.
+With too few examples, the update direction is too noisy to settle on a
+useful low-rank approximation, and the model essentially fails to move
+away from chance.
+
+\subsection{Rank Has Limited Impact}
+
+On SST-2, the accuracy difference between $r=4$ and $r=16$ is small
+(0.80 points), suggesting that for a comparatively easy task such as
+binary sentiment classification, a low rank is already expressive enough
+to capture what the model needs to learn. Practically, this means
+practitioners working on similarly simple tasks may be able to use
+smaller ranks and save memory without paying a real accuracy cost.
+Whether this still holds for a harder task is precisely what our QNLI
+experiments were meant to test. However, the answer obtained was rather unexpected.
+
+\subsection{The QNLI Failure Interpretation}
+
+The most unanticipated result, and the one most important to
+discuss honestly, is that both full fine-tuning (50.54\%) and LoRA
+(49.70\%) failed to learn QNLI at all: both sit essentially at the
+50\% chance level of a binary classification task, while only IA$^3$
+reached a respectable 81.19\%. This is not a case of one method
+slightly underperforming another. In fact, two of our three methods, including
+full fine-tuning, did not learn the task. This indicates that
+the cause is unlikely to lie in LoRA, IA$^3$, or ModernBERT individually,
+but rather in our own training setup.
+
+This does not imply that LoRA is unsuitable for harder NLU tasks
+in general. Most plausibly, the
+problem traces back to a methodological choice that, in hindsight,
+was suboptimal: we used the same fixed learning rate of $2 \times 10^{-5}$
+for every method and every dataset, without any per task or per method
+tuning, and without a learning rate warmup or schedule. QNLI is a larger
+and structurally different task than SST-2: this means that it requires the model to
+relate a question to a separate sentence rather than judge a single
+sentence in isolation. Full fine-tuning of 149.6M parameters is
+considerably more sensitive to the learning rate than a tiny
+low-dimensional adapter, as the entire weight space is exposed to the
+update rather than a constrained low-rank subspace \cite{hu2021lora}. A learning rate that is perfectly reasonable
+for SST-2 may simply be unstable or insufficient for QNLI under full
+fine-tuning, and the same instability likely propagated to LoRA, since
+LoRA's adapters are inserted into the same attention projections that
+full fine-tuning is updating directly. IA$^3$, by contrast, only learns
+small element wise rescaling vectors with a much more constrained update
+geometry \cite{liu2022ia3}, which may make it considerably more robust to a learning rate
+that is not well tuned for the task.
+
+A second, related possibility is that our training schedule itself was
+too short or too abrupt for QNLI. We trained for a fixed three epochs
+with no warmup and no learning rate decay, a setup carried over directly
+from our SST-2 experiments without re-validation. SST-2 sentences are
+short and the task is comparatively easy, so this schedule was
+apparently sufficient there. QNLI pairs are longer and the task is
+harder, and it is plausible that the model needed either more epochs, a
+warmup phase to avoid early instability, or both. Unfortunately, we did not have the resources in our timeline to run a learning rate or schedule sweep on
+QNLI for the scope of the project, which we consider a real gap in our
+experimental design rather than a minor omission.
+
+These results should be interpreted carefully: we cannot
+claim, from our QNLI numbers alone, that LoRA underperforms full
+fine-tuning or IA$^3$ on harder NLU tasks, because our full fine-tuning
+baseline failed under the same conditions. What can be said is that
+IA$^3$'s update mechanism was, in our specific setup, considerably more
+robust to an untuned learning rate than either full fine-tuning or LoRA.
+This is itself a useful, if accidental, finding, but it concerns
+robustness to hyperparameter choice rather than which method is intrinsically stronger on harder tasks. A fair
+comparison would require, at minimum, a small learning rate sweep
+performed independently for each method on each dataset, and we list
+this as the first priority for any continuation of this work.
+
+\subsection{Training Time Considerations}
+
+Training time in our experiments does not cleanly track parameter count,
+and we think this is worth flagging rather than glossing over. On SST-2,
+full fine-tuning for one epoch (32.8 minutes) was faster than LoRA for
+three epochs (79.3 minutes), which on its own might suggest LoRA offers
+no efficiency benefit. We believe this is largely an artifact of our
+experimental design rather than a property of LoRA itself: we fixed the
+number of epochs per method rather than the number of epochs per
+comparison, so the full fine-tuning baseline that converged fastest was
+also the one we happened to train for the fewest epochs. On QNLI the
+picture is messier still. In fact, LoRA took 133.3 minutes, almost two and a
+half times longer than full fine-tuning's 55.7 minutes on the same
+data, which we cannot fully explain from our logs and suspect is
+related to Colab's shared, variable GPU availability rather than a
+genuine property of the method. We did not control for background load
+on the T4 instances we used, and wall clock time on free-tier Colab is,
+in our experience, noisy enough that small numbers of runs are not a
+reliable basis for strong claims about relative speed. A more rigorous
+comparison would fix the number of epochs across methods, repeat each
+configuration multiple times, and report variance, which would be the basis for future research about this topic.
+
+\subsection{Limitations}
+
+We would rather list our limitations plainly than understate them.
+First, our learning rate and training schedule were not tuned per
+method or per dataset, and we believe this is the most likely cause of
+the QNLI failures described above. This is the limitation we would fix
+first given more time. Second, we evaluate on only two classification
+tasks, both at the sentence level. Results may look completely different
+on generation tasks or token level tasks such as named entity
+recognition, which we did not have enough time to properly run. Third, we test only
+ModernBERT-base, as the larger ModernBERT-large variant may behave
+differently under the same PEFT methods. Fourth, we did not tune LoRA's
+or IA$^3$'s own hyperparameters (LoRA's $\alpha$ and dropout, or which
+modules each method targets) beyond the single configuration we report,
+so the numbers in this paper should be read as a single operating point
+rather than each method's best achievable performance. Furthermore, we
+disabled checkpoint saving to keep runs lightweight on free-tier Colab,
+which means our reported accuracies reflect the final training step
+rather than the best validation checkpoint. For the QNLI full
+fine-tuning and LoRA runs in particular, it is possible that an earlier
+checkpoint performed better before training degraded, and we have no way
+to check this retroactively. Finally, we do not compare against other
+PEFT methods such as prefix tuning or AdaLoRA \cite{zhang2022adalora},
+which would help establish whether the robustness we observed in IA$^3$
+is specific to that method or shared by other multiplicative,
+low-parameter approaches.
+
+% ─────────────────────────────────────────
+\section{Conclusion}
+
+We present an empirical study of parameter-efficient fine-tuning applied
+to ModernBERT, a state-of-the-art encoder-only transformer released in
+December 2024. On SST-2, our results match expectations from the broader
+PEFT literature: LoRA reaches within 2.3 points of full fine-tuning
+accuracy while using 99.6\% fewer trainable parameters, rank has only a
+small effect on accuracy, and performance degrades sharply once training
+data becomes scarce.
+
+Our QNLI experiments, however, did not go as planned, and the
+honest reporting of that is as valuable as the SST-2 results
+themselves. Both full fine-tuning and LoRA failed to learn the task
+under our fixed, untuned learning rate and schedule, landing at
+chance level accuracy, while IA$^3$ reached 81.19\% under the exact same
+conditions. Rather than concluding that IA$^3$ is simply the better
+method, we conclude that our comparison was not fair as designed: a
+single learning rate chosen for SST-2 and reused without adjustment was
+not adequate for a harder, structurally different task, and we could not correct this before reporting
+results. We see real value in reporting this failure rather than
+omitting the QNLI experiments or quietly re-running them with a better
+learning rate after the fact, since it points to a concrete and easily
+overlooked pitfall: comparing PEFT methods fairly requires tuning each
+method's optimization setup independently per task, not reusing one
+configuration that happened to work on an easier dataset.
+
+Future work should, first and most directly, repeat the QNLI comparison
+with a per method, per task learning rate sweep and a proper warmup
+schedule to establish whether LoRA and full fine-tuning can in fact
+learn the task under fairer conditions. Beyond that, extending this
+study to token level and generation tasks, to ModernBERT-large, and to
+additional PEFT methods such as AdaLoRA would give a much more complete
+picture of when parameter efficient fine-tuning is and is not a safe
+default choice for ModernBERT.
+
+% ─────────────────────────────────────────
+\bibliographystyle{acl_natbib}
+\bibliography{references}
+
+\end{document}
